@@ -5,17 +5,20 @@
 #include <filesystem>
 #include <string>
 
-std::vector<uint8_t> decryptBoardSet(const std::vector<uint8_t>& inBuffer);
+// std::byte is kind of stupid
+using Byte = uint8_t;
+using ByteVector = std::vector<Byte>;
 
-uint32_t calculateChecksum(std::vector<uint8_t>::const_iterator begin, std::vector<uint8_t>::const_iterator end);
-
-static void outputHexBytes(std::vector<uint8_t>::const_iterator begin, std::vector<uint8_t>::const_iterator end)
+static void outputHexBytes(ByteVector::const_iterator begin, ByteVector::const_iterator end)
 {
-    std::cout << std::hex << std::setw(2) << std::setfill('0');
     for (auto it = begin; it != end; ++it)
-        std::cout << static_cast<int>(*it);
+        std::cout << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(*it);
     std::cout << std::dec;
 }
+
+ByteVector decryptBoardSet(const ByteVector& inBuffer);
+
+uint32_t calculateChecksum(ByteVector::const_iterator begin, ByteVector::const_iterator end);
 
 int main(int argc, char* argv[])
 {
@@ -35,7 +38,7 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    std::vector<uint8_t> boardSetBuffer(std::filesystem::file_size(inFileName));
+    ByteVector boardSetBuffer(std::filesystem::file_size(inFileName));
     inBoardSetFile.read(reinterpret_cast<char*>(&boardSetBuffer[0]), boardSetBuffer.size());
 
     inBoardSetFile.close();
@@ -81,12 +84,13 @@ int main(int argc, char* argv[])
         constexpr size_t passwordSizeOffset = 0x14;
 
         // read the password size
-        uint32_t passwordSize = *reinterpret_cast<uint32_t*>(&boardSetBuffer[passwordSizeOffset]);
+        uint32_t* passwordSizePtr = reinterpret_cast<uint32_t*>(&boardSetBuffer[passwordSizeOffset]);
+        uint32_t passwordSize = *passwordSizePtr;
         if (passwordSize > 0)
         {
             std::cout << "This board set is password protected." << std::endl;
 
-            std::cout << "Password: ";
+            std::cout << "Password : ";
             auto passwordBegin = boardSetBuffer.begin() + passwordSizeOffset + sizeof(uint32_t);
             outputHexBytes(passwordBegin, passwordBegin + passwordSize);
             std::cout << std::endl;
@@ -99,7 +103,7 @@ int main(int argc, char* argv[])
             if (input == "y")
             {
                 // set the password size to 0
-                *reinterpret_cast<uint32_t*>(&boardSetBuffer[passwordSizeOffset]) = 0;
+                *passwordSizePtr = 0;
 
                 // remove the password from the file
                 boardSetBuffer.erase(passwordBegin, passwordBegin + passwordSize);
@@ -109,7 +113,8 @@ int main(int argc, char* argv[])
         const size_t checksumOffset = boardSetBuffer.size() - sizeof(uint32_t);
 
         // read the checksum at the end of the file
-        uint32_t checksum = *reinterpret_cast<uint32_t*>(&boardSetBuffer[checksumOffset]);
+        uint32_t* checksumPtr = reinterpret_cast<uint32_t*>(&boardSetBuffer[checksumOffset]);
+        uint32_t checksum = *checksumPtr;
         std::cout << "Checksum : " << std::hex << checksum << std::endl;
 
         // calculate new checksum and write it if it differs from the one in the file
@@ -117,7 +122,7 @@ int main(int argc, char* argv[])
         if (newChecksum != checksum)
         {
             std::cout << "New checksum : " << std::hex << newChecksum << std::endl;
-            *reinterpret_cast<uint32_t*>(&boardSetBuffer[checksumOffset]) = newChecksum;
+            *checksumPtr = newChecksum;
         }
     }
 
@@ -143,7 +148,7 @@ int main(int argc, char* argv[])
     return EXIT_SUCCESS;
 }
 
-std::vector<uint8_t> decryptBoardSet(const std::vector<uint8_t>& inBuffer)
+ByteVector decryptBoardSet(const ByteVector& inBuffer)
 {
     constexpr uint32_t fileSizeXorKey = 0xABBAFAD5;
 
@@ -153,7 +158,7 @@ std::vector<uint8_t> decryptBoardSet(const std::vector<uint8_t>& inBuffer)
         throw std::runtime_error("Decrypted file size does not match. File is invalid.");
 
     // create a buffer for the decrypted board set, stripping the size stored at the beginning
-    std::vector<uint8_t> outBuffer(inBuffer.begin() + sizeof(uint32_t), inBuffer.end());
+    ByteVector outBuffer(inBuffer.begin() + sizeof(uint32_t), inBuffer.end());
 
     // board sets have a defined number of encryption layers, each containing the encrypted data followed by the layer's XOR key and the key size
     // the parent layer's key is stripped from the decrypted data, so we should track the final size of the output buffer
@@ -169,7 +174,7 @@ std::vector<uint8_t> decryptBoardSet(const std::vector<uint8_t>& inBuffer)
         // lower 4 bits of the last byte in the layer store the size of the XOR key
         // it seems that the size of the first key matches the number of layers
         size_t xorKeySize = outBuffer[--outBufferSize] & 0xF;
-        std::vector<uint8_t> xorKey(xorKeySize);
+        ByteVector xorKey(xorKeySize);
 
         // read the layer's XOR key from the last to first byte
         for (size_t j = 0; j < xorKeySize; ++j)
@@ -188,13 +193,13 @@ std::vector<uint8_t> decryptBoardSet(const std::vector<uint8_t>& inBuffer)
     return outBuffer;
 }
 
-uint32_t calculateChecksum(std::vector<uint8_t>::const_iterator begin, std::vector<uint8_t>::const_iterator end)
+uint32_t calculateChecksum(ByteVector::const_iterator begin, ByteVector::const_iterator end)
 {
     constexpr uint32_t seed = 0x5E04A58C;
 
     uint32_t result = static_cast<uint32_t>(end - begin) ^ seed;
     for (auto it = begin; it != end; ++it)
-        result = static_cast<uint32_t>(it - begin) ^ (*it) ^ (((result & 0x80000000) != 0) | (result << 1));
+        result = static_cast<uint32_t>(it - begin) ^ (*it) ^ (((result & 0x80000000) >> 31) | (result << 1));
 
     return result;
 }
